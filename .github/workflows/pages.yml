@@ -1,0 +1,83 @@
+# Publishes the rendered board to GitHub Pages.
+#
+# Why this replaces "Deploy from a branch" (2026-11-02): GitHub's built-in branch deploy failed three
+# times between Oct 30 and Nov 1, each time on GitHub's side, never in the page itself:
+#   Oct 30 20:03 UTC  deploy: "Deployment failed, try again later."
+#   Oct 31 08:02 UTC  build: the runner hung for 45 min in checkout cleanup after the upload succeeded
+#   Nov  1 08:14 UTC  deploy: refused because the previous push's deployment was still in progress
+# The built-in workflow never retries, so each failure left the live board one or more pushes behind
+# until the next publish, up to about two hours later, and sent a failure email.
+#
+# This workflow publishes exactly the same files the built-in one did (the whole repo minus .git and
+# .github), but it queues behind a running deploy instead of failing, times a hung job out, and retries
+# the deploy step twice before giving up.
+#
+# Action versions match the ones GitHub's own built-in Pages workflow ran here on Oct 30 - Nov 2.
+#
+# Requires Settings -> Pages -> Build and deployment -> Source = "GitHub Actions".
+name: Publish board to Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time. A push that lands while one runs waits its turn; if several pile up, GitHub
+# keeps only the newest waiting run, so the board always ends on the latest push.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy3.outputs.page_url || steps.deploy2.outputs.page_url || steps.deploy1.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+          retention-days: 1
+
+      - name: Deploy
+        id: deploy1
+        uses: actions/deploy-pages@v5
+        continue-on-error: true
+        with:
+          timeout: 300000
+
+      - name: Wait before retry 1
+        if: steps.deploy1.outcome == 'failure'
+        run: sleep 90
+
+      - name: Deploy (retry 1)
+        id: deploy2
+        if: steps.deploy1.outcome == 'failure'
+        uses: actions/deploy-pages@v5
+        continue-on-error: true
+        with:
+          timeout: 300000
+
+      - name: Wait before retry 2
+        if: steps.deploy2.outcome == 'failure'
+        run: sleep 180
+
+      - name: Deploy (retry 2)
+        id: deploy3
+        if: steps.deploy2.outcome == 'failure'
+        uses: actions/deploy-pages@v5
+        with:
+          timeout: 300000
